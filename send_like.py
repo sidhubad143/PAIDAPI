@@ -112,7 +112,7 @@ async def main():
             print(f"Error: {info['message']}")
             return
         else:
-            # print(json.dumps(info, indent=4))
+            print(json.dumps(info, indent=4))
             # Extract initial like count
             basic_info = info.get("basicInfo", {})
             current_likes = basic_info.get("liked", )
