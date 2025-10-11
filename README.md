@@ -122,6 +122,7 @@ Automates creating and capturing **Free Fire guest accounts** via **Frida**, for
 freefire-like-and-guest-api/
 ├── LICENSE
 ├── README.md
+├── count_likes.py
 ├── dev
 │   ├── frida_injections
 │   │   ├── capture_and_save_guest.js
