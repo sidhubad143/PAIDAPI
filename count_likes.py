@@ -1,4 +1,12 @@
-# main.py
+# Protective Source License v1.0 (PSL-1.0)
+# Copyright (c) 2025 Kaif
+# Unauthorized removal of credits or use for abusive/illegal purposes
+# will terminate all rights granted under this license.
+
+# Original author: 0xMe
+# GitHub: https://github.com/0xMe/FreeFire-Api
+# Modifications by kaifcodec (c) 2025
+
 
 from ff_proto import freefire_pb2, core_pb2, account_show_pb2
 import httpx
@@ -10,10 +18,6 @@ from Crypto.Cipher import AES
 import base64
 from typing import Tuple
 import sys
-
-# --- Code from the provided snippet ---
-# It's assumed that all the original code is in this file or imported from another module.
-# For this example, we'll place it all here to make it a single runnable script.
 
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
