@@ -1,2 +1,2 @@
-# ff_proto initialisation
+# ff_proto init
 # *_pb_2.py
