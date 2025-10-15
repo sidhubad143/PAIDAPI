@@ -3,30 +3,22 @@
 # Unauthorized removal of credits or use for abusive/illegal purposes
 # will terminate all rights granted under this license.
 
-import base64
 import binascii
 from Crypto.Cipher import AES
-from ff_proto import send_like_pb2
-LikeProfileReq = send_like_pb2.like
+from Crypto.Util.Padding import pad
+from ff_proto.send_like_pb2 import like as LikeProfileReq
 
 # --- Garena API Encryption Constants ---
-MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
-MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
+MAIN_KEY = b'Yg&tc%DEuh6%Zc^8'
+MAIN_IV = b'6oyZDr22E3ychjM%'
 
-def pad(text: bytes) -> bytes:
-    """
-    Pads the data to be a multiple of AES block size (16 bytes).
-    PKCS7 padding.
-    """
-    padding_length = AES.block_size - (len(text) % AES.block_size)
-    return text + bytes([padding_length] * padding_length)
 
 def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     """
     Encrypt data using AES-CBC.
     """
     cipher = AES.new(key, AES.MODE_CBC, iv)
-    padded = pad(plaintext)
+    padded = pad(plaintext, AES.block_size)
     return cipher.encrypt(padded)
 
 def create_like_payload(uid: int, region: str) -> bytes:
