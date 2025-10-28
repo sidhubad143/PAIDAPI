@@ -3,7 +3,7 @@
 ## Disclaimer & Responsible Use
 ### ⚠️ Regional Guest Account Warning: 
 - The guest accounts in `guests_manager/` are from the IND server. If you are from a different region, replace these existing ones with your regional guests to properly receive likes.
-
+---
 **Important → read before using this repository.**
 
 This project is provided **solely for research, defensive testing, educational and interoperability purposes**. By using the code in this repository you agree to all of the following:
