@@ -33,11 +33,8 @@ app = FastAPI(title="FF Like Sender API", version="1.0.0")
 # API Key security (simple bearer token for demo; use proper secrets in prod)
 security = HTTPBearer()
 
-async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    api_key = credentials.credentials
-    if api_key != "your_secret_api_key_here":  # Replace with actual key or env var
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-    return api_key
+async def get_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    return credentials.credentials
 
 # Paths
 guests_file = "guests_manager/guests_converted.json"
@@ -149,13 +146,19 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
     return False
 
 # Main API endpoint - Now using query parameters (call as GET /send-likes?uid=123&server=IND)
-@app.get("/send-likes", response_model=LikeResponse, dependencies=[Depends(verify_api_key)])
+@app.get("/send-likes", response_model=LikeResponse)
 async def send_likes(
     uid: str = Query(..., description="Target UID to send likes to"),
     server: str = Query(..., description="Server: IND, BR, US, SAC, NA"),
     num_likes: int = Query(100, description="Number of likes (max 100)"),
-    concurrent: int = Query(20, description="Concurrent requests per second")
+    concurrent: int = Query(20, description="Concurrent requests per second"),
+    api_key: str = Query(None, description="API Key for authentication (required for access)")
 ):
+    # API Key validation - now via query param for easy browser testing
+    SECRET_API_KEY = "your_secret_api_key_here"  # Change this to your desired key
+    if api_key != SECRET_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key. Provide ?api_key=your_secret_api_key_here")
+
     uid_to_like = uid.strip()
     server_name_in = server.strip().upper()
     requested_likes = min(100, max(1, num_likes))  # Enforce daily 100 max
