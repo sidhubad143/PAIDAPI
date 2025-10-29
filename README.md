@@ -1,5 +1,7 @@
 # FreeFire Guest generator, Like & API Toolkit
 ---
+- For any question write an email to: kaifcodec@gmail.com
+---
 ## Disclaimer & Responsible Use
 ### ⚠️ Regional Guest Account Warning: 
 - The guest accounts in `guests_manager/` are from the IND server. If you are from a different region, replace these existing ones with your regional guests to properly receive likes.
