@@ -1,5 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, HTTPException, Query
 import httpx
 import asyncio
 import binascii
@@ -28,19 +27,18 @@ app = FastAPI(title="FF Like Sender API", version="1.0.0")
 guests_file = "guests_manager/guests_converted.json"
 usage_dir = "usage_history"
 usage_file = os.path.join(usage_dir, "guest_usage_by_target.json")
-endpoint = "/GetPlayerPersonalShow"
 
 # Ensure dirs
 os.makedirs(usage_dir, exist_ok=True)
 
-# Load usage file (per-target with daily reset at 4 AM IST)
+# Load usage file
 if os.path.exists(usage_file):
     with open(usage_file, "r") as f:
         usage_by_target = json.load(f)
 else:
     usage_by_target = {}
 
-# Helpers for per-target with daily reset at 4 AM IST
+# Helpers
 def ensure_target(target_uid: str):
     if target_uid not in usage_by_target:
         usage_by_target[target_uid] = {"used_guests": {}, "total_likes": 0, "last_reset_time": 0}
@@ -56,7 +54,6 @@ def reset_if_needed(target_uid: str):
         usage_by_target[target_uid]["used_guests"] = {}
         usage_by_target[target_uid]["total_likes"] = 0
         usage_by_target[target_uid]["last_reset_time"] = today_4am.timestamp()
-        print(f"Daily reset performed for {target_uid} at {today_4am}")
 
 def guest_used_for_target(target_uid: str, guest_uid: str) -> bool:
     ensure_target(target_uid)
@@ -71,36 +68,31 @@ def save_usage():
     with open(usage_file, "w") as f:
         json.dump(usage_by_target, f, indent=2)
 
-# Determine Base URL based on Server Input
+# Determine Base URL
 def get_base_url(server_name: str) -> str:
     if server_name == "IND":
         return "https://client.ind.freefiremobile.com"
     elif server_name in {"BR", "US", "SAC", "NA"}:
         return "https://client.us.freefiremobile.com"
     else:
-        raise ValueError(f"Unsupported server: {server_name}. Supported: IND, BR, US, SAC, NA")
+        raise ValueError(f"Unsupported server: {server_name}")
 
-# Pydantic models for request/response
+# Simplified Pydantic model
 class LikeResponse(BaseModel):
-    success: int
-    total_planned: int
     target_uid: str
-    initial_likes: int
-    final_likes: int
-    increase: int
+    likes_sent: int
     message: str
 
-# Async worker (same as original, but adapted with retry logic)
+# Async worker
 async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore: asyncio.Semaphore) -> bool:
     guest_uid = str(guest["uid"])
     guest_pass = guest["password"]
 
     if guest_used_for_target(target_uid, guest_uid):
-        print(f"[{guest_uid}] Already used for target {target_uid}, skipping...")
         return False
 
     async with semaphore:
-        for attempt in range(3):  # Retry up to 3 times
+        for attempt in range(3):
             try:
                 jwt, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
                 payload = create_like_payload(target_uid, region)
@@ -124,24 +116,15 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
                     response = await client.post(url, data=payload, headers=headers, timeout=30)
                     response.raise_for_status()
 
-                print(f"[{guest_uid}] Like sent to {target_uid}! Status: {response.status_code} (attempt {attempt + 1})")
                 mark_used(target_uid, guest_uid, time.time())
                 return True
 
             except httpx.HTTPStatusError as err:
-                if err.response.status_code == 401:  # Token expired/auth error - no retry
-                    print(f"[{guest_uid}] Token expired/auth error: {err}, skipping guest permanently for this run")
+                if err.response.status_code == 401:
                     return False
-                body = err.response.text if err.response is not None else ""
-                print(f"[{guest_uid}] HTTP error (attempt {attempt + 1}): {err}, Response: {body}")
-                if attempt == 2:  # Last attempt failed
-                    return False
-            except httpx.RequestError as err:
-                print(f"[{guest_uid}] Request exception (attempt {attempt + 1}): {err}")
                 if attempt == 2:
                     return False
-            except Exception as e:
-                print(f"[{guest_uid}] Unexpected error (attempt {attempt + 1}): {e}")
+            except Exception:
                 if attempt == 2:
                     return False
 
@@ -149,70 +132,50 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
 
 @app.get("/")
 async def root():
-    return {"message": "I am alive, please support", "support_link": "https://t.me/PBX_CHAT"}
+    return {"message": "I am alive"}
 
-# Main API endpoint - Now using query parameters (call as GET /send-likes?uid=123&server=IND)
 @app.get("/send-likes", response_model=LikeResponse)
 async def send_likes(
-    uid: str = Query(..., description="Target UID to send likes to"),
+    uid: str = Query(..., description="Target UID"),
     server: str = Query(..., description="Server: IND, BR, US, SAC, NA"),
     num_likes: int = Query(100, description="Number of likes (max 100)"),
-    concurrent: int = Query(50, description="Concurrent requests per second")  # Increased default for speed
+    concurrent: int = Query(100, description="Concurrent requests")  # Increased for speed
 ):
     uid_to_like = uid.strip()
     server_name_in = server.strip().upper()
-    requested_likes = min(100, max(1, num_likes))  # Enforce daily 100 max
-    MAX_CONCURRENT = min(100, max(1, concurrent))  # Cap at 100 for speed, but safe
+    requested_likes = min(100, max(1, num_likes))
+    MAX_CONCURRENT = min(100, max(1, concurrent))
 
     if not uid_to_like:
         raise HTTPException(status_code=400, detail="UID is required")
 
-    # Validate server
     if server_name_in not in {"IND", "BR", "US", "SAC", "NA"}:
-        raise HTTPException(status_code=400, detail="Invalid server. Supported: IND, BR, US, SAC, NA")
+        raise HTTPException(status_code=400, detail="Invalid server")
 
     BASE_URL = get_base_url(server_name_in)
 
-    # Daily reset check
+    # Daily reset
     reset_if_needed(uid_to_like)
 
-    # Check if daily limit reached
+    # Check limit
     total_used = usage_by_target[uid_to_like]["total_likes"]
     remaining = 100 - total_used
     if remaining <= 0:
-        raise HTTPException(status_code=400, detail="Likes already claimed for today. Try tomorrow after 4 AM IST.")
+        raise HTTPException(status_code=400, detail="your like already claim")
 
     requested_likes = min(requested_likes, remaining)
 
-    # Fetch initial info
-    print("\nFetching target account info...")
-    try:
-        info = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        if info.get("error"):
-            raise HTTPException(status_code=400, detail=f"Error: {info['message']}")
-        basic_info = info.get("basicInfo", {})
-        current_likes = basic_info.get("liked", 0)
-        print(f"Initial like count = {current_likes}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get account info: {e}")
-
-    guest_count = count()
-    print(f"{guest_count} guest accounts found")
-
+    # Load guests
     with open(guests_file, "r") as f:
         guests = json.load(f)
 
     available_guests = [g for g in guests if not guest_used_for_target(uid_to_like, str(g["uid"]))]
 
     if len(available_guests) < requested_likes:
-        raise HTTPException(status_code=400, detail=f"Insufficient available guests for {uid_to_like} (only {len(available_guests)}, need {requested_likes}. Wait until after 4 AM IST for reset)")
+        raise HTTPException(status_code=400, detail="Insufficient guests")
 
-    # Buffer for failures (e.g., token expires) - aim for exactly requested_likes successes
-    buffer = 20  # Extra guests to cover potential failures
-    attempt_count = requested_likes + buffer
-    selected_guests = available_guests[:attempt_count]
-    likes_planned = len(selected_guests)
-    print(f"Planning to attempt {likes_planned} likes (with buffer) to achieve {requested_likes} successes for {uid_to_like}")
+    # No buffer, direct attempt for speed
+    selected_guests = available_guests[:requested_likes]
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     tasks = [like_with_guest(g, uid_to_like, BASE_URL, semaphore) for g in selected_guests]
@@ -221,32 +184,13 @@ async def send_likes(
     save_usage()
 
     success = sum(1 for r in results if isinstance(r, bool) and r)
-    print(f"Success: {success}/{likes_planned} (aimed for {requested_likes})")
-
-    # If short, we could loop to try more, but with buffer + retry, it should be close/full
-
-    # Fetch final info
-    try:
-        info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info_after = info_after.get("basicInfo", {})
-        new_likes = basic_info_after.get("liked", 0)
-        diff = new_likes - current_likes
-    except Exception as e:
-        new_likes = current_likes  # Fallback
-        diff = 0
-        print(f"Could not fetch final count: {e}")
 
     return LikeResponse(
-        success=success,
-        total_planned=requested_likes,  # Report aimed target
         target_uid=uid_to_like,
-        initial_likes=current_likes,
-        final_likes=new_likes,
-        increase=diff,
-        message=f"Sent {success}/{requested_likes} likes (attempted {likes_planned}). Likes increased by {diff}. Resets daily after 4 AM IST."
+        likes_sent=success,
+        message=f"Likes sent to {uid_to_like}: {success}/{requested_likes}"
     )
 
-# Health check
 @app.get("/health")
 def health():
     return {"status": "healthy"}
