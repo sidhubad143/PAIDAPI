@@ -128,6 +128,11 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
     return False
 
 # Main API endpoint - Now using query parameters (call as GET /send-likes?uid=123&server=IND)
+
+@app.get("/")
+async def root():
+    return {"message": "I am alive, please support", "support_link": "https://t.me/PBX_CHAT"}
+    
 @app.get("/send-likes", response_model=LikeResponse)
 async def send_likes(
     uid: str = Query(..., description="Target UID to send likes to"),
