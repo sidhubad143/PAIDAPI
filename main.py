@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
 import asyncio
 import binascii
@@ -8,35 +9,32 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from pydantic import BaseModel
+import uvicorn
 from get_jwt import create_jwt
 from encrypt_like_body import create_like_payload
 from count_likes import GetAccountInformation
 from guests_manager.count_guest import count
 
-# ---------------------- #
-# FastAPI app setup
-# ---------------------- #
+# FastAPI app
 app = FastAPI(title="FF Like Sender API", version="1.0.0")
 
-# Paths and constants
+# Paths
 guests_file = "guests_manager/guests_converted.json"
 usage_dir = "usage_history"
 usage_file = os.path.join(usage_dir, "guest_usage_by_target.json")
 endpoint = "/GetPlayerPersonalShow"
 
-# Ensure directory exists
+# Ensure dirs
 os.makedirs(usage_dir, exist_ok=True)
 
-# Load existing usage data
+# Load usage file (per-target with 24h expiration)
 if os.path.exists(usage_file):
     with open(usage_file, "r") as f:
         usage_by_target = json.load(f)
 else:
     usage_by_target = {}
 
-# ---------------------- #
-# Utility Functions
-# ---------------------- #
+# Helpers for per-target with 24h expiration
 def ensure_target(target_uid: str):
     if target_uid not in usage_by_target:
         usage_by_target[target_uid] = {"used_guests": {}, "total_likes": 0}
@@ -45,13 +43,12 @@ def guest_used_for_target(target_uid: str, guest_uid: str) -> bool:
     ensure_target(target_uid)
     used_guests = usage_by_target[target_uid]["used_guests"]
     now_ts = time.time()
-
-    # Clean expired (older than 24h)
-    expired_keys = [k for k, v in used_guests.items() if now_ts - v > 86400]
-    for key in expired_keys:
-        del used_guests[key]
-
-    usage_by_target[target_uid]["total_likes"] = len(used_guests)
+    # Clean expired (older than 24 hours)
+    expired = {k: v for k, v in used_guests.items() if now_ts - v > 86400}  # 24h in seconds
+    if expired:
+        used_guests.update({k: v for k, v in used_guests.items() if k not in expired})
+        usage_by_target[target_uid]["total_likes"] = len(used_guests)
+        print(f"Cleaned {len(expired)} expired guests for {target_uid}")
     return guest_uid in used_guests
 
 def mark_used(target_uid: str, guest_uid: str, ts: float):
@@ -63,22 +60,16 @@ def save_usage():
     with open(usage_file, "w") as f:
         json.dump(usage_by_target, f, indent=2)
 
+# Determine Base URL based on Server Input
 def get_base_url(server_name: str) -> str:
-    server_name = server_name.upper()
-    base_urls = {
-        "IND": "https://client.ind.freefiremobile.com",
-        "BR": "https://client.us.freefiremobile.com",
-        "US": "https://client.us.freefiremobile.com",
-        "SAC": "https://client.us.freefiremobile.com",
-        "NA": "https://client.us.freefiremobile.com",
-    }
-    if server_name not in base_urls:
-        raise ValueError("Unsupported server. Supported: IND, BR, US, SAC, NA")
-    return base_urls[server_name]
+    if server_name == "IND":
+        return "https://client.ind.freefiremobile.com"
+    elif server_name in {"BR", "US", "SAC", "NA"}:
+        return "https://client.us.freefiremobile.com"
+    else:
+        raise ValueError(f"Unsupported server: {server_name}. Supported: IND, BR, US, SAC, NA")
 
-# ---------------------- #
-# Models
-# ---------------------- #
+# Pydantic models for request/response
 class LikeResponse(BaseModel):
     success: int
     total_planned: int
@@ -88,20 +79,19 @@ class LikeResponse(BaseModel):
     increase: int
     message: str
 
-# ---------------------- #
-# Async worker
-# ---------------------- #
+# Async worker (same as original, but adapted)
 async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore: asyncio.Semaphore) -> bool:
     guest_uid = str(guest["uid"])
     guest_pass = guest["password"]
+    now_ms = int(time.time() * 1000)
 
     if guest_used_for_target(target_uid, guest_uid):
-        print(f"[{guest_uid}] Already used within 24h for {target_uid}, skipping...")
+        print(f"[{guest_uid}] Used within 24h for target {target_uid}, skipping...")
         return False
 
     async with semaphore:
         try:
-            jwt, region, _ = await create_jwt(guest_uid, guest_pass)
+            jwt, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
             payload = create_like_payload(target_uid, region)
             if isinstance(payload, str):
                 payload = binascii.unhexlify(payload)
@@ -111,6 +101,7 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
                 "Connection": "Keep-Alive",
                 "Accept-Encoding": "gzip",
                 "Content-Type": "application/octet-stream",
+                "Expect": "100-continue",
                 "Authorization": f"Bearer {jwt}",
                 "X-Unity-Version": "2018.4.11f1",
                 "X-GA": "v1 1",
@@ -118,73 +109,91 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
             }
 
             async with httpx.AsyncClient() as client:
-                response = await client.post(f"{BASE_URL}/LikeProfile", data=payload, headers=headers, timeout=30)
+                url = f"{BASE_URL}/LikeProfile"
+                response = await client.post(url, data=payload, headers=headers, timeout=30)
                 response.raise_for_status()
 
-            print(f"[{guest_uid}] Sent like to {target_uid} ✅")
+            print(f"[{guest_uid}] Like sent to {target_uid}! Status: {response.status_code}")
             mark_used(target_uid, guest_uid, time.time())
             return True
 
+        except httpx.HTTPStatusError as err:
+            body = err.response.text if err.response is not None else ""
+            print(f"[{guest_uid}] HTTP error: {err}, Response: {body}")
+        except httpx.RequestError as err:
+            print(f"[{guest_uid}] Request exception: {err}")
         except Exception as e:
-            print(f"[{guest_uid}] Error: {e}")
-            return False
+            print(f"[{guest_uid}] Unexpected error: {e}")
 
-# ---------------------- #
-# Main Endpoint
-# ---------------------- #
+    return False
+
+# Main API endpoint - Now using query parameters (call as GET /send-likes?uid=123&server=IND)
 @app.get("/send-likes", response_model=LikeResponse)
 async def send_likes(
-    uid: str = Query(..., description="Target UID"),
-    server: str = Query(..., description="Server (IND, BR, US, SAC, NA)"),
+    uid: str = Query(..., description="Target UID to send likes to"),
+    server: str = Query(..., description="Server: IND, BR, US, SAC, NA"),
     num_likes: int = Query(100, description="Number of likes (max 100)"),
-    concurrent: int = Query(20, description="Concurrent limit (1–50)"),
+    concurrent: int = Query(20, description="Concurrent requests per second")
 ):
     uid_to_like = uid.strip()
-    server_name = server.strip().upper()
-    requested_likes = min(100, max(1, num_likes))
-    MAX_CONCURRENT = min(50, max(1, concurrent))
+    server_name_in = server.strip().upper()
+    requested_likes = min(100, max(1, num_likes))  # Enforce daily 100 max
+    MAX_CONCURRENT = min(50, max(1, concurrent))  # Cap concurrent
 
     if not uid_to_like:
-        raise HTTPException(status_code=400, detail="UID required")
+        raise HTTPException(status_code=400, detail="UID is required")
 
-    BASE_URL = get_base_url(server_name)
+    # Validate server
+    if server_name_in not in {"IND", "BR", "US", "SAC", "NA"}:
+        raise HTTPException(status_code=400, detail="Invalid server. Supported: IND, BR, US, SAC, NA")
 
-    # Get target info
+    BASE_URL = get_base_url(server_name_in)
+
+    # Fetch initial info
+    print("\nFetching target account info...")
     try:
-        info = await GetAccountInformation(uid_to_like, "0", server_name, endpoint)
+        info = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
         if info.get("error"):
-            raise HTTPException(status_code=400, detail=info["message"])
-        current_likes = info.get("basicInfo", {}).get("liked", 0)
+            raise HTTPException(status_code=400, detail=f"Error: {info['message']}")
+        basic_info = info.get("basicInfo", {})
+        current_likes = basic_info.get("liked", 0)
+        print(f"Initial like count = {current_likes}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching account info: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get account info: {e}")
 
     guest_count = count()
-    print(f"{guest_count} guests found")
+    print(f"{guest_count} guest accounts found")
 
     with open(guests_file, "r") as f:
         guests = json.load(f)
 
     available_guests = [g for g in guests if not guest_used_for_target(uid_to_like, str(g["uid"]))]
+
     if not available_guests:
-        raise HTTPException(status_code=400, detail="No available guests. Wait 24h reset.")
+        raise HTTPException(status_code=400, detail=f"No available guests for {uid_to_like} (wait 24h for reset)")
 
     likes_planned = min(requested_likes, len(available_guests))
-    print(f"Sending {likes_planned} likes to {uid_to_like}...")
+    print(f"Planning to send {likes_planned} likes to {uid_to_like}")
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     tasks = [like_with_guest(g, uid_to_like, BASE_URL, semaphore) for g in available_guests[:likes_planned]]
-    results = await asyncio.gather(*tasks)
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     save_usage()
 
-    success = sum(1 for r in results if r)
+    success = sum(1 for r in results if isinstance(r, bool) and r)
     print(f"Success: {success}/{likes_planned}")
 
+    # Fetch final info
     try:
-        info_after = await GetAccountInformation(uid_to_like, "0", server_name, endpoint)
-        new_likes = info_after.get("basicInfo", {}).get("liked", 0)
+        info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
+        basic_info_after = info_after.get("basicInfo", {})
+        new_likes = basic_info_after.get("liked", 0)
         diff = new_likes - current_likes
-    except Exception:
-        new_likes, diff = current_likes, 0
+    except Exception as e:
+        new_likes = current_likes  # Fallback
+        diff = 0
+        print(f"Could not fetch final count: {e}")
 
     return LikeResponse(
         success=success,
@@ -193,20 +202,13 @@ async def send_likes(
         initial_likes=current_likes,
         final_likes=new_likes,
         increase=diff,
-        message=f"Sent {success}/{likes_planned} likes. Likes increased by {diff}. Resets in 24h.",
+        message=f"Sent {success}/{likes_planned} likes. Likes increased by {diff}. Resets in 24h."
     )
 
-# ---------------------- #
-# Health Check
-# ---------------------- #
+# Health check
 @app.get("/health")
 def health():
     return {"status": "healthy"}
 
-# ---------------------- #
-# Local Dev Run (ignored on Vercel)
-# ---------------------- #
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 5000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
