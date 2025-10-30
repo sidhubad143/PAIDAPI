@@ -130,7 +130,7 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
 # Async main
 async def main():
     uid_to_like = input("Enter UID to like: ").strip()
-    server_name_in = input("Enter server name (e.g., IND, BR, US, SAC, NA): ").strip().upper()
+    server_name_in = input("Enter server name (e.g., IND, BR, US, SAC, NA, PK): ").strip().upper()
     from count_likes import GetAccountInformation
 
     # Validate server input (optional friendly warning)
