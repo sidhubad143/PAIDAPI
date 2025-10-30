@@ -10,31 +10,13 @@ from datetime import datetime, timedelta
 from typing import Dict, Any
 from pydantic import BaseModel
 import uvicorn
-
-async def create_jwt(uid: str, password: str) -> tuple:
-    # Placeholder: Return dummy values
-    return "dummy_jwt", "dummy_region", "dummy_server_url"
-
-def create_like_payload(target_uid: str, region: str) -> bytes:
-    # Placeholder: Return dummy payload
-    return b"dummy_payload"
-
-async def GetAccountInformation(uid: str, param2: str, server: str, endpoint: str) -> Dict[str, Any]:
-    # Placeholder: Return dummy info
-    return {"basicInfo": {"liked": 0}}
-
-def count() -> int:
-    # Placeholder: Return dummy count
-    return 100  # Assume 100 guests
+from get_jwt import create_jwt
+from encrypt_like_body import create_like_payload
+from count_likes import GetAccountInformation
+from guests_manager.count_guest import count
 
 # FastAPI app
 app = FastAPI(title="FF Like Sender API", version="1.0.0")
-
-# API Key security (simple bearer token for demo; use proper secrets in prod)
-security = HTTPBearer()
-
-async def get_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    return credentials.credentials
 
 # Paths
 guests_file = "guests_manager/guests_converted.json"
@@ -151,14 +133,8 @@ async def send_likes(
     uid: str = Query(..., description="Target UID to send likes to"),
     server: str = Query(..., description="Server: IND, BR, US, SAC, NA"),
     num_likes: int = Query(100, description="Number of likes (max 100)"),
-    concurrent: int = Query(20, description="Concurrent requests per second"),
-    api_key: str = Query(None, description="API Key for authentication (required for access)")
+    concurrent: int = Query(20, description="Concurrent requests per second")
 ):
-    # API Key validation - now via query param for easy browser testing
-    SECRET_API_KEY = "your_secret_api_key_here"  # Change this to your desired key
-    if api_key != SECRET_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key. Provide ?api_key=your_secret_api_key_here")
-
     uid_to_like = uid.strip()
     server_name_in = server.strip().upper()
     requested_likes = min(100, max(1, num_likes))  # Enforce daily 100 max
@@ -211,7 +187,7 @@ async def send_likes(
     # Fetch final info
     try:
         info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info_after = info_after.get("basicInfo", {})  # Fixed: was info, now info_after
+        basic_info_after = info_after.get("basicInfo", {})
         new_likes = basic_info_after.get("liked", 0)
         diff = new_likes - current_likes
     except Exception as e:
