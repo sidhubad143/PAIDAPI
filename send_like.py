@@ -42,20 +42,48 @@ def save_usage():
     with open(usage_file, "w") as f:
         json.dump(usage_by_target, f, indent=2)
 
-# Determine Base URL based on Server Input
+# Supported regions (for reference / validation)
+SUPPORTED_REGIONS = [
+    "IND", "BR", "SG", "RU", "ID", "TW", "US", "VN",
+    "TH", "ME", "PK", "CIS", "SAC", "NA"
+]
+
+# Determine Base URL based on Server Input (mapping + safe fallback)
 def get_base_url(server_name: str) -> str:
-    if server_name == "IND":
+    if not server_name:
         return "https://client.ind.freefiremobile.com"
-    elif server_name in {"BR", "US", "SAC", "NA"}:
-        return "https://client.us.freefiremobile.com"
-    else:
-        return "https://clientbp.ggblueshark.com"
+
+    s = server_name.strip().upper()
+    mapping = {
+        "IND": "https://client.ind.freefiremobile.com",
+        "BR":  "https://client.br.freefiremobile.com",
+        "SG":  "https://client.sg.freefiremobile.com",
+        "RU":  "https://client.ru.freefiremobile.com",
+        "ID":  "https://client.id.freefiremobile.com",
+        "TW":  "https://client.tw.freefiremobile.com",
+        "US":  "https://client.us.freefiremobile.com",
+        "VN":  "https://client.vn.freefiremobile.com",
+        "TH":  "https://client.th.freefiremobile.com",
+        # Regions that are commonly routed to IND (merged/inactive)
+        "PK":  "https://client.ind.freefiremobile.com",
+        "ME":  "https://client.ind.freefiremobile.com",
+        "CIS": "https://client.ind.freefiremobile.com",
+        # SA/NA clusters to US endpoint
+        "SAC": "https://client.us.freefiremobile.com",
+        "NA":  "https://client.us.freefiremobile.com",
+    }
+    # Return mapped url or default to IND cluster (safer than unknown host)
+    return mapping.get(s, "https://client.ind.freefiremobile.com")
 
 # Async worker
 async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore: asyncio.Semaphore) -> bool:
-    guest_uid = str(guest["uid"])
-    guest_pass = guest["password"]
+    guest_uid = str(guest.get("uid", ""))
+    guest_pass = guest.get("password", "")
     now_ms = int(time.time() * 1000)
+
+    if not guest_uid:
+        print("[WARN] Guest entry missing uid, skipping...")
+        return False
 
     if guest_used_for_target(target_uid, guest_uid):
         print(f"[{guest_uid}] Permanently used for target {target_uid}, skipping...")
@@ -105,17 +133,24 @@ async def main():
     server_name_in = input("Enter server name (e.g., IND, BR, US, SAC, NA): ").strip().upper()
     from count_likes import GetAccountInformation
 
+    # Validate server input (optional friendly warning)
+    if server_name_in and server_name_in not in SUPPORTED_REGIONS:
+        print(f"[WARN] Server '{server_name_in}' is not in supported list. Proceeding with best-effort fallback (IND).")
+
+    BASE_URL = get_base_url(server_name_in)
+    print(f"\nUsing base URL: {BASE_URL} (server code: {server_name_in or 'IND'})")
+
     print("\nFetching target account info...")
     try:
         info = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
         if info.get("error"):
-            print(f"Error: {info['message']}")
+            print(f"Error: {info.get('message', 'unknown')}")
             return
         else:
             print(json.dumps(info, indent=4))
             # Extract initial like count
             basic_info = info.get("basicInfo", {})
-            current_likes = basic_info.get("liked", )
+            current_likes = basic_info.get("liked", 0)
             print(f"\nCurrent like count = {current_likes}")
     except Exception as e:
         print(f"An error occurred while getting account information: {e}")
@@ -126,19 +161,27 @@ async def main():
     print("\nFree Fire allows 100 guest accounts to like a single profile within 24 hours")
 
     requested_likes_in = input("How many likes you want to send? (recommended: 100/day): ").strip()
-    requested_likes = int(requested_likes_in) if requested_likes_in else 100
+    try:
+        requested_likes = int(requested_likes_in) if requested_likes_in else 100
+    except ValueError:
+        requested_likes = 100
 
     max_conc_in = input("How many like requests to send per second? (eg. 20): ").strip()
-    MAX_CONCURRENT = int(max_conc_in) if max_conc_in else 20
+    try:
+        MAX_CONCURRENT = int(max_conc_in) if max_conc_in else 20
+    except ValueError:
+        MAX_CONCURRENT = 20
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
-    BASE_URL = get_base_url(server_name_in)
-
     ensure_target(uid_to_like)
-    with open(guests_file, "r") as f:
-        guests = json.load(f)
+    try:
+        with open(guests_file, "r") as f:
+            guests = json.load(f)
+    except Exception as e:
+        print(f"Could not open guests file '{guests_file}': {e}")
+        return
 
-    available_guests = [g for g in guests if not guest_used_for_target(uid_to_like, str(g["uid"]))]
+    available_guests = [g for g in guests if not guest_used_for_target(uid_to_like, str(g.get("uid", "")))]
 
     if not available_guests:
         print(f"No available guests left for target {uid_to_like} under permanent-skip policy.")
@@ -162,8 +205,8 @@ async def main():
     print("\nRe-fetching account info to verify new like count...")
     try:
         info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info = info.get("basicInfo", {})
-        new_likes = basic_info.get("liked", 0)
+        basic_info_after = info_after.get("basicInfo", {})
+        new_likes = basic_info_after.get("liked", 0)
         print(f"Like count now = {new_likes}")
         diff = new_likes - current_likes
         print(f"Likes increased by +{diff}")
@@ -173,4 +216,3 @@ async def main():
 # Entry
 if __name__ == "__main__":
     asyncio.run(main())
-
