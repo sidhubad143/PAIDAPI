@@ -90,53 +90,62 @@ class LikeResponse(BaseModel):
     increase: int
     message: str
 
-# Async worker (same as original, but adapted)
+# Async worker (same as original, but adapted with retry logic)
 async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore: asyncio.Semaphore) -> bool:
     guest_uid = str(guest["uid"])
     guest_pass = guest["password"]
-    now_ms = int(time.time() * 1000)
 
     if guest_used_for_target(target_uid, guest_uid):
         print(f"[{guest_uid}] Already used for target {target_uid}, skipping...")
         return False
 
     async with semaphore:
-        try:
-            jwt, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
-            payload = create_like_payload(target_uid, region)
-            if isinstance(payload, str):
-                payload = binascii.unhexlify(payload)
+        for attempt in range(3):  # Retry up to 3 times
+            try:
+                jwt, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
+                payload = create_like_payload(target_uid, region)
+                if isinstance(payload, str):
+                    payload = binascii.unhexlify(payload)
 
-            headers = {
-                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007)",
-                "Connection": "Keep-Alive",
-                "Accept-Encoding": "gzip",
-                "Content-Type": "application/octet-stream",
-                "Expect": "100-continue",
-                "Authorization": f"Bearer {jwt}",
-                "X-Unity-Version": "2018.4.11f1",
-                "X-GA": "v1 1",
-                "ReleaseVersion": "OB50",
-            }
+                headers = {
+                    "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007)",
+                    "Connection": "Keep-Alive",
+                    "Accept-Encoding": "gzip",
+                    "Content-Type": "application/octet-stream",
+                    "Expect": "100-continue",
+                    "Authorization": f"Bearer {jwt}",
+                    "X-Unity-Version": "2018.4.11f1",
+                    "X-GA": "v1 1",
+                    "ReleaseVersion": "OB50",
+                }
 
-            async with httpx.AsyncClient() as client:
-                url = f"{BASE_URL}/LikeProfile"
-                response = await client.post(url, data=payload, headers=headers, timeout=30)
-                response.raise_for_status()
+                async with httpx.AsyncClient() as client:
+                    url = f"{BASE_URL}/LikeProfile"
+                    response = await client.post(url, data=payload, headers=headers, timeout=30)
+                    response.raise_for_status()
 
-            print(f"[{guest_uid}] Like sent to {target_uid}! Status: {response.status_code}")
-            mark_used(target_uid, guest_uid, time.time())
-            return True
+                print(f"[{guest_uid}] Like sent to {target_uid}! Status: {response.status_code} (attempt {attempt + 1})")
+                mark_used(target_uid, guest_uid, time.time())
+                return True
 
-        except httpx.HTTPStatusError as err:
-            body = err.response.text if err.response is not None else ""
-            print(f"[{guest_uid}] HTTP error: {err}, Response: {body}")
-        except httpx.RequestError as err:
-            print(f"[{guest_uid}] Request exception: {err}")
-        except Exception as e:
-            print(f"[{guest_uid}] Unexpected error: {e}")
+            except httpx.HTTPStatusError as err:
+                if err.response.status_code == 401:  # Token expired/auth error - no retry
+                    print(f"[{guest_uid}] Token expired/auth error: {err}, skipping guest permanently for this run")
+                    return False
+                body = err.response.text if err.response is not None else ""
+                print(f"[{guest_uid}] HTTP error (attempt {attempt + 1}): {err}, Response: {body}")
+                if attempt == 2:  # Last attempt failed
+                    return False
+            except httpx.RequestError as err:
+                print(f"[{guest_uid}] Request exception (attempt {attempt + 1}): {err}")
+                if attempt == 2:
+                    return False
+            except Exception as e:
+                print(f"[{guest_uid}] Unexpected error (attempt {attempt + 1}): {e}")
+                if attempt == 2:
+                    return False
 
-    return False
+        return False
 
 @app.get("/")
 async def root():
@@ -148,12 +157,12 @@ async def send_likes(
     uid: str = Query(..., description="Target UID to send likes to"),
     server: str = Query(..., description="Server: IND, BR, US, SAC, NA"),
     num_likes: int = Query(100, description="Number of likes (max 100)"),
-    concurrent: int = Query(20, description="Concurrent requests per second")
+    concurrent: int = Query(50, description="Concurrent requests per second")  # Increased default for speed
 ):
     uid_to_like = uid.strip()
     server_name_in = server.strip().upper()
     requested_likes = min(100, max(1, num_likes))  # Enforce daily 100 max
-    MAX_CONCURRENT = min(50, max(1, concurrent))  # Cap concurrent
+    MAX_CONCURRENT = min(100, max(1, concurrent))  # Cap at 100 for speed, but safe
 
     if not uid_to_like:
         raise HTTPException(status_code=400, detail="UID is required")
@@ -195,20 +204,26 @@ async def send_likes(
 
     available_guests = [g for g in guests if not guest_used_for_target(uid_to_like, str(g["uid"]))]
 
-    if not available_guests:
-        raise HTTPException(status_code=400, detail=f"No available guests for {uid_to_like} (wait until after 4 AM IST for reset)")
+    if len(available_guests) < requested_likes:
+        raise HTTPException(status_code=400, detail=f"Insufficient available guests for {uid_to_like} (only {len(available_guests)}, need {requested_likes}. Wait until after 4 AM IST for reset)")
 
-    likes_planned = min(requested_likes, len(available_guests))
-    print(f"Planning to send {likes_planned} likes to {uid_to_like}")
+    # Buffer for failures (e.g., token expires) - aim for exactly requested_likes successes
+    buffer = 20  # Extra guests to cover potential failures
+    attempt_count = requested_likes + buffer
+    selected_guests = available_guests[:attempt_count]
+    likes_planned = len(selected_guests)
+    print(f"Planning to attempt {likes_planned} likes (with buffer) to achieve {requested_likes} successes for {uid_to_like}")
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-    tasks = [like_with_guest(g, uid_to_like, BASE_URL, semaphore) for g in available_guests[:likes_planned]]
+    tasks = [like_with_guest(g, uid_to_like, BASE_URL, semaphore) for g in selected_guests]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     save_usage()
 
     success = sum(1 for r in results if isinstance(r, bool) and r)
-    print(f"Success: {success}/{likes_planned}")
+    print(f"Success: {success}/{likes_planned} (aimed for {requested_likes})")
+
+    # If short, we could loop to try more, but with buffer + retry, it should be close/full
 
     # Fetch final info
     try:
@@ -223,13 +238,18 @@ async def send_likes(
 
     return LikeResponse(
         success=success,
-        total_planned=likes_planned,
+        total_planned=requested_likes,  # Report aimed target
         target_uid=uid_to_like,
         initial_likes=current_likes,
         final_likes=new_likes,
         increase=diff,
-        message=f"Sent {success}/{likes_planned} likes. Likes increased by {diff}. Resets daily after 4 AM IST."
+        message=f"Sent {success}/{requested_likes} likes (attempted {likes_planned}). Likes increased by {diff}. Resets daily after 4 AM IST."
     )
+
+# Health check
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000)
