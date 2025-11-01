@@ -1,4 +1,3 @@
-# send_like.py
 import httpx
 import asyncio
 import binascii
@@ -64,11 +63,7 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
 
     async with semaphore:
         try:
-            jwt_token, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
-            if not jwt_token:
-                print(f"[{guest_uid}] Failed to create JWT, skipping.")
-                return False
-
+            jwt, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
             payload = create_like_payload(target_uid, region)
             if isinstance(payload, str):
                 payload = binascii.unhexlify(payload)
@@ -79,18 +74,18 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
                 "Accept-Encoding": "gzip",
                 "Content-Type": "application/octet-stream",
                 "Expect": "100-continue",
-                "Authorization": f"Bearer {jwt_token}",
+                "Authorization": f"Bearer {jwt}",
                 "X-Unity-Version": "2018.4.11f1",
                 "X-GA": "v1 1",
-                "ReleaseVersion": "OB51",
+                "ReleaseVersion": "OB50",
             }
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient() as client:
                 url = f"{BASE_URL}/LikeProfile"
-                resp = await client.post(url, data=payload, headers=headers)
-                resp.raise_for_status()
+                response = await client.post(url, data=payload, headers=headers, timeout=30)
+                response.raise_for_status()
 
-            print(f"[{guest_uid}] Like sent to {target_uid}! Status: {resp.status_code}")
+            print(f"[{guest_uid}] Like sent to {target_uid}! Status: {response.status_code}")
             mark_used(target_uid, guest_uid, now_ms)
             return True
 
@@ -118,9 +113,9 @@ async def main():
             return
         else:
             print(json.dumps(info, indent=4))
-            # Extract initial like count safely
-            basic_info = info.get("basicInfo", {}) or {}
-            current_likes = basic_info.get("liked", 0)
+            # Extract initial like count
+            basic_info = info.get("basicInfo", {})
+            current_likes = basic_info.get("liked", )
             print(f"\nCurrent like count = {current_likes}")
     except Exception as e:
         print(f"An error occurred while getting account information: {e}")
@@ -133,7 +128,7 @@ async def main():
     requested_likes_in = input("How many likes you want to send? (recommended: 100/day): ").strip()
     requested_likes = int(requested_likes_in) if requested_likes_in else 100
 
-    max_conc_in = input("How many like requests to send concurrently? (eg. 20): ").strip()
+    max_conc_in = input("How many like requests to send per second? (eg. 20): ").strip()
     MAX_CONCURRENT = int(max_conc_in) if max_conc_in else 20
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
@@ -167,8 +162,8 @@ async def main():
     print("\nRe-fetching account info to verify new like count...")
     try:
         info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info_after = info_after.get("basicInfo", {}) or {}
-        new_likes = basic_info_after.get("liked", 0)
+        basic_info = info.get("basicInfo", {})
+        new_likes = basic_info.get("liked", 0)
         print(f"Like count now = {new_likes}")
         diff = new_likes - current_likes
         print(f"Likes increased by +{diff}")
