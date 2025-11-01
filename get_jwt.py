@@ -1,31 +1,29 @@
-# get_jwt.py — OB51 JWT Generator (fixed working version)
+# get_jwt.py — OB51 JWT Generator + fallback API
 # Author: ChatGPT (2025)
-# Free for testing / educational use only
 
 import httpx
 import asyncio
 import json
-import base64
-import time
+import sys
 from typing import Tuple
 from google.protobuf import json_format, message
 from Crypto.Cipher import AES
-from ff_proto import freefire_pb2  # Make sure ff_proto/freefire_pb2.py exists
+from ff_proto import freefire_pb2  # make sure this file exists
 
-# --- OB51 constants ---
-MAIN_KEY = b'R3d$7%yHq#P2t@v!'   # OB51 AES key (16 bytes)
-MAIN_IV = b'FvT!9zP0q@b6w$3L'    # OB51 AES IV (16 bytes)
+# === OB51 constants ===
+MAIN_KEY = b'R3d$7%yHq#P2t@v!'
+MAIN_IV = b'FvT!9zP0q@b6w$3L'
 RELEASEVERSION = "OB51"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007)"
 
-# Pre-seeded region accounts
+# === Region accounts ===
 ACCOUNTS = {
     'IND': "uid=4263329821&password=4CF889C4452D0181D3528B21E292552F5D8414340CA91418685B505D2C433311",
-    'SG': "uid=3158350464&password=70EA041FCF79190E3D0A8F3CA95CAAE1F39782696CE9D85C2CCD525E28D223FC",
-    'BR': "uid=3158668455&password=44296D19343151B25DE68286BDC565904A0DA5A5CC5E96B7A7ADBE7C11E07933",
+    'SG':  "uid=3158350464&password=70EA041FCF79190E3D0A8F3CA95CAAE1F39782696CE9D85C2CCD525E28D223FC",
+    'BR':  "uid=3158668455&password=44296D19343151B25DE68286BDC565904A0DA5A5CC5E96B7A7ADBE7C11E07933",
 }
 
-# --- Helper functions ---
+# === helpers ===
 def pad_pkcs7(data: bytes) -> bytes:
     pad_len = AES.block_size - (len(data) % AES.block_size)
     return data + bytes([pad_len]) * pad_len
@@ -39,14 +37,11 @@ def json_to_proto_bytes(json_data: str, proto_message: message.Message) -> bytes
     return proto_message.SerializeToString()
 
 def decode_protobuf(encoded_data: bytes, message_type):
-    inst = message_type()
-    try:
-        inst.ParseFromString(encoded_data)
-    except Exception as e:
-        raise RuntimeError(f"Error parsing message with type '{message_type.__name__}': {e}")
-    return inst
+    msg = message_type()
+    msg.ParseFromString(encoded_data)
+    return msg
 
-# --- Token functions ---
+# === Garena OAuth ===
 async def getAccess_Token_guest(uid: str, password: str) -> Tuple[str, str]:
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
     payload = (
@@ -54,142 +49,87 @@ async def getAccess_Token_guest(uid: str, password: str) -> Tuple[str, str]:
         "&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
         "&client_id=100067"
     )
-    headers = {
-        'User-Agent': USERAGENT,
-        'Connection': "Keep-Alive",
-        'Accept-Encoding': "gzip",
-        'Content-Type': "application/x-www-form-urlencoded"
-    }
-
+    headers = {'User-Agent': USERAGENT, 'Content-Type': 'application/x-www-form-urlencoded'}
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post(url, data=payload, headers=headers)
         if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}: {r.text}")
+            return "0", "0"
         try:
             data = r.json()
+            return data.get("access_token", "0"), data.get("open_id", "0")
         except Exception:
-            raise RuntimeError("Invalid JSON in response from guest login")
-        return data.get("access_token", "0"), data.get("open_id", "0")
+            return "0", "0"
 
+# === Main JWT creator ===
+async def create_jwt(uid: str, password: str) -> Tuple[str, str, str]:
+    access_token, open_id = await getAccess_Token_guest(uid, password)
+    if access_token == "0":
+        raise RuntimeError("Invalid guest credentials or token fetch failed.")
 
-async def getAccess_Token_server(region: str) -> Tuple[str, str]:
-    region = region.upper()
-    payload = ACCOUNTS.get(region)
-    if not payload:
-        raise ValueError(f"No server account configured for region '{region}'")
+    json_data = json.dumps({
+        "open_id": open_id,
+        "open_id_type": "4",
+        "login_token": access_token,
+        "orign_platform_type": "4"
+    })
+    encoded_proto = json_to_proto_bytes(json_data, freefire_pb2.LoginReq())
+    encrypted_payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, encoded_proto)
 
-    url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
+    url = "https://loginbp.ggblueshark.com/MajorLogin"
     headers = {
         'User-Agent': USERAGENT,
-        'Connection': "Keep-Alive",
-        'Accept-Encoding': "gzip",
-        'Content-Type': "application/x-www-form-urlencoded"
+        'Content-Type': "application/octet-stream",
+        'ReleaseVersion': RELEASEVERSION
     }
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(url, data=payload, headers=headers)
+    async with httpx.AsyncClient(timeout=25) as client:
+        r = await client.post(url, data=encrypted_payload, headers=headers)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text}")
-        try:
-            data = r.json()
-        except Exception:
-            raise RuntimeError("Invalid JSON in response from server account")
-        return data.get("access_token", "0"), data.get("open_id", "0")
-
-
-# --- Main JWT creator ---
-async def create_jwt(*args) -> Tuple[str, str, str]:
-    """
-    Usage:
-      create_jwt(uid, password) → Guest login
-      create_jwt(region)        → Server account login
-    Returns: (token, region, server_url)
-    """
-    try:
-        # Determine flow
-        if len(args) == 2:
-            uid, password = args
-            print("🔹 Logging in with guest credentials...")
-            access_token, open_id = await getAccess_Token_guest(uid, password)
-            if access_token == "0":
-                raise RuntimeError("❌ Invalid guest credentials or token fetch failed.")
-        elif len(args) == 1:
-            region = str(args[0]).upper()
-            print(f"🔹 Logging in with server account for {region}...")
-            access_token, open_id = await getAccess_Token_server(region)
-            if access_token == "0":
-                raise RuntimeError("❌ Failed to get access_token for server account.")
-        else:
-            raise ValueError("Usage: create_jwt(uid, password) or create_jwt(region)")
-
-        # Build LoginReq protobuf
-        json_data = json.dumps({
-            "open_id": open_id,
-            "open_id_type": "4",
-            "login_token": access_token,
-            "orign_platform_type": "4"
-        })
-
-        encoded_proto = json_to_proto_bytes(json_data, freefire_pb2.LoginReq())
-        encrypted_payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, encoded_proto)
-
-        url = "https://loginbp.ggblueshark.com/MajorLogin"
-        headers = {
-            'User-Agent': USERAGENT,
-            'Connection': "Keep-Alive",
-            'Accept-Encoding': "gzip",
-            'Content-Type': "application/octet-stream",
-            'X-Unity-Version': "2018.4.11f1",
-            'X-GA': "v1 1",
-            'ReleaseVersion': RELEASEVERSION
-        }
-
-        async with httpx.AsyncClient(timeout=25) as client:
-            r = await client.post(url, data=encrypted_payload, headers=headers)
-            if r.status_code != 200:
-                raise RuntimeError(f"HTTP {r.status_code}: {r.text}")
-            resp_bytes = r.content
-
-        # Parse protobuf LoginRes
-        login_res = decode_protobuf(resp_bytes, freefire_pb2.LoginRes)
+        login_res = decode_protobuf(r.content, freefire_pb2.LoginRes)
         login_json = json.loads(json_format.MessageToJson(login_res))
-
         token = login_json.get("token", "")
         lock_region = login_json.get("lockRegion", "UNKNOWN")
         server_url = login_json.get("serverUrl", "UNKNOWN")
-
         if not token:
-            raise RuntimeError(f"Login failed: {login_json}")
-
-        print("✅ JWT successfully created.")
+            raise RuntimeError("Token missing in response.")
         return token, lock_region, server_url
 
-    except Exception as e:
-        raise RuntimeError(f"Error during JWT creation: {e}") from e
+# === Fallback API ===
+async def fallback_api(uid: str, password: str, item_id: str = "999999") -> dict:
+    """
+    Calls the backup API if Garena auth fails.
+    Example: https://dev-wishlist-changer.onrender.com/add?uid=xxx&password=xxx&itemId=yyy
+    """
+    url = f"https://dev-wishlist-changer.onrender.com/add?uid={uid}&password={password}&itemId={item_id}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(url)
+        return r.json() if r.status_code == 200 else {"error": f"HTTP {r.status_code}"}
 
-
-
+# === CLI ===
 async def main():
-    print("\n--- Free Fire JWT Generator ---")
-    
-    uid = input("Enter your UID: ")
-    password = input("Enter your password: ")
-    
+    print("\n--- Free Fire JWT Generator (OB51) ---")
+    uid = input("Enter your UID: ").strip()
+    password = input("Enter your password: ").strip()
     if not uid or not password:
-        print("UID and password cannot be empty.")
+        print("❌ UID and password cannot be empty.")
         sys.exit(1)
-        
+
     try:
-        print("\nGenerating JWT...")
-        token, lock_region, server_url = await create_jwt(uid, password)
-        # return token
-        print("\n--- JWT Created Successfully ---")
+        print("\nGenerating JWT via Garena servers...")
+        token, region, srv = await create_jwt(uid, password)
+        print("\n✅ JWT Created Successfully!")
         print(f"Token: {token}")
-        print(f"Locked Region: {lock_region}")
-        print(f"Server URL: {server_url}")
-        
+        print(f"Region: {region}")
+        print(f"Server URL: {srv}")
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\n⚠️ Garena login failed: {e}")
+        print("Trying fallback API...")
+        try:
+            data = await fallback_api(uid, password)
+            print("✅ Fallback API Response:")
+            print(json.dumps(data, indent=2))
+        except Exception as ex:
+            print(f"❌ Fallback API failed: {ex}")
 
 if __name__ == "__main__":
     asyncio.run(main())
