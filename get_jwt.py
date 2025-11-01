@@ -1,131 +1,84 @@
-# Protective Source License v1.0 (PSL-1.0)
-# Copyright (c) 2025 Kaif
-# Unauthorized removal of credits or use for abusive/illegal purposes
-# will terminate all rights granted under this license.
-
-
-
 import httpx
-import asyncio
 import json
+import time
 import base64
-import sys
-from typing import Tuple
-from google.protobuf import json_format, message
-from Crypto.Cipher import AES
 
-# IMPORTANT: This script requires 'freefire_pb2.py' to be in the same directory.
-from ff_proto import freefire_pb2
+# --- CONFIG ---
+JWT_API_BASE = "https://jwt-api-kanha.vercel.app/token"
+# Example API: https://jwt-api-kanha.vercel.app/token?uid={uid}&password={password}
 
-# --- Global Constant
-MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
-MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
-RELEASEVERSION = "OB51"
-USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-SUPPORTED_REGIONS = ["IND", "BR", "SG", "RU", "ID", "TW", "US", "VN", "TH", "ME", "PK", "CIS"]
+# --- CORE FUNCTION ---
 
-# --- Helper Functions
-async def json_to_proto(json_data: str, proto_message: message.Message) -> bytes:
-    json_format.ParseDict(json.loads(json_data), proto_message)
-    serialized_data = proto_message.SerializeToString()
-    return serialized_data
+async def create_jwt(uid: str, password: str):
+    """
+    Generate JWT token for a Free Fire account (OB51 compatible).
+    Returns: (jwt_token, region, server_url)
+    """
 
-def pad(text: bytes) -> bytes:
-    padding_length = AES.block_size - (len(text) % AES.block_size)
-    padding = bytes([padding_length] * padding_length)
-    return text + padding
+    url = f"{JWT_API_BASE}?uid={uid}&password={password}"
 
-def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
-    aes = AES.new(key, AES.MODE_CBC, iv)
-    padded_plaintext = pad(plaintext)
-    ciphertext = aes.encrypt(padded_plaintext)
-    return ciphertext
-
-def decode_protobuf(encoded_data: bytes, message_type: message.Message) -> message.Message:
-    message_instance = message_type()
-    message_instance.ParseFromString(encoded_data)
-    return message_instance
-
-# --- Core Authentication
-async def getAccess_Token(uid: str, password: str):
-    url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
-    payload = f"uid={uid}&password={password}&response_type=token&client_type=2&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3&client_id=100067"
-    headers = {
-        'User-Agent': USERAGENT,
-        'Connection': "Keep-Alive",
-        'Accept-Encoding': "gzip",
-        'Content-Type': "application/x-www-form-urlencoded"
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, data=payload, headers=headers)
-        data = response.json()
-        return data.get("access_token", "0"), data.get("open_id", "0")
-        
-
-async def create_jwt(uid: int, password: str) -> Tuple[str, str, str]:
-    access_token, open_id = await getAccess_Token(uid, password)
-    
-    if access_token == "0":
-        raise ValueError("Failed to obtain access token.")
-    
-    json_data = json.dumps({
-      "open_id": open_id,
-      "open_id_type": "4",
-      "login_token": access_token,
-      "orign_platform_type": "4"
-    })
-    
-    encoded_result = await json_to_proto(json_data, freefire_pb2.LoginReq())
-    payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, encoded_result)
-    
-    url = "https://loginbp.ggblueshark.com/MajorLogin"
-    headers = {
-        'User-Agent': USERAGENT,
-        'Connection': "Keep-Alive",
-        'Accept-Encoding': "gzip",
-        'Content-Type': "application/octet-stream",
-        'Expect': "100-continue",
-        'X-Unity-Version': "2018.4.11f1",
-        'X-GA': "v1 1",
-        'ReleaseVersion': RELEASEVERSION
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, data=payload, headers=headers)
-        response_content = response.content
-        message = json.loads(json_format.MessageToJson(decode_protobuf(response_content, freefire_pb2.LoginRes)))
-        
-        token = message.get("token", "0")
-        region = message.get("lockRegion", "0")
-        serverUrl = message.get("serverUrl", "0")
-        
-        if token == "0":
-            raise ValueError("Failed to obtain JWT.")
-            
-        return token, region, serverUrl
-
-# --- Main Program to Run
-async def main():
-    print("\n--- Free Fire JWT Generator ---")
-    
-    uid = input("Enter your UID: ")
-    password = input("Enter your password: ")
-    
-    if not uid or not password:
-        print("UID and password cannot be empty.")
-        sys.exit(1)
-        
     try:
-        print("\nGenerating JWT...")
-        token, lock_region, server_url = await create_jwt(uid, password)
-        # return token
-        print("\n--- JWT Created Successfully ---")
-        print(f"Token: {token}")
-        print(f"Locked Region: {lock_region}")
-        print(f"Server URL: {server_url}")
-        
-    except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url)
+            response.raise_for_status()
 
+            data = response.json()
+            # Example response:
+            # {
+            #   "region": "IND",
+            #   "status": "live",
+            #   "team": "@AuraXseller",
+            #   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            # }
+
+            if "token" not in data:
+                raise ValueError(f"Invalid response: {data}")
+
+            jwt_token = data["token"]
+            region = data.get("region", "IND")
+
+            # Pick correct base URL for region
+            if region == "IND":
+                server_url = "https://client.ind.freefiremobile.com"
+            elif region in {"BR", "US", "SAC", "NA"}:
+                server_url = "https://client.us.freefiremobile.com"
+            else:
+                server_url = "https://clientbp.ggblueshark.com"
+
+            print(f"[{uid}] ✅ JWT created successfully | Region: {region}")
+            return jwt_token, region, server_url
+
+    except httpx.HTTPStatusError as e:
+        print(f"[{uid}] ❌ HTTP error: {e.response.status_code} | {e.response.text}")
+    except httpx.RequestError as e:
+        print(f"[{uid}] 🌐 Request error: {e}")
+    except Exception as e:
+        print(f"[{uid}] ⚠️ Unexpected error: {e}")
+
+    return None, None, None
+
+
+# --- TEST MODE ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+
+    async def test():
+        print("--- Free Fire JWT Generator (OB51) ---")
+        uid = input("Enter UID: ").strip()
+        password = input("Enter password: ").strip()
+
+        print("\nGenerating JWT...")
+        jwt_token, region, server_url = await create_jwt(uid, password)
+
+        if jwt_token:
+            print("\n✅ JWT Generated Successfully!")
+            print(json.dumps({
+                "uid": uid,
+                "region": region,
+                "server_url": server_url,
+                "jwt": jwt_token[:50] + "..."  # partial print
+            }, indent=4))
+        else:
+            print("\n❌ Failed to generate JWT.")
+
+    asyncio.run(test())
