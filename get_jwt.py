@@ -168,21 +168,28 @@ async def create_jwt(*args) -> Tuple[str, str, str]:
         raise RuntimeError(f"Error during JWT creation: {e}") from e
 
 
-# --- CLI Test ---
-if __name__ == "__main__":
-    import sys
-    async def main():
-        if len(sys.argv) == 3:
-            tok, region, srv = await create_jwt(sys.argv[1], sys.argv[2])
-            print(f"\nToken: {tok[:60]}...")
-            print(f"Region: {region}")
-            print(f"Server URL: {srv}")
-        elif len(sys.argv) == 2:
-            tok, region, srv = await create_jwt(sys.argv[1])
-            print(f"\nToken: {tok[:60]}...")
-            print(f"Region: {region}")
-            print(f"Server URL: {srv}")
-        else:
-            print("Usage:\n  python get_jwt.py <uid> <password>\n  python get_jwt.py <REGION>")
 
+async def main():
+    print("\n--- Free Fire JWT Generator ---")
+    
+    uid = input("Enter your UID: ")
+    password = input("Enter your password: ")
+    
+    if not uid or not password:
+        print("UID and password cannot be empty.")
+        sys.exit(1)
+        
+    try:
+        print("\nGenerating JWT...")
+        token, lock_region, server_url = await create_jwt(uid, password)
+        # return token
+        print("\n--- JWT Created Successfully ---")
+        print(f"Token: {token}")
+        print(f"Locked Region: {lock_region}")
+        print(f"Server URL: {server_url}")
+        
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
+
+if __name__ == "__main__":
     asyncio.run(main())
