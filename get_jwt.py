@@ -3,8 +3,6 @@
 # Unauthorized removal of credits or use for abusive/illegal purposes
 # will terminate all rights granted under this license.
 
-
-
 import httpx
 import asyncio
 import json
@@ -17,11 +15,11 @@ from Crypto.Cipher import AES
 # IMPORTANT: This script requires 'freefire_pb2.py' to be in the same directory.
 from ff_proto import freefire_pb2
 
-# --- Global Constant
+# --- Global Constant (OB51 Update)
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
-RELEASEVERSION = "OB50"
-USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
+RELEASEVERSION = "OB51"  # Updated to OB51
+USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007)"  # Updated
 SUPPORTED_REGIONS = ["IND", "BR", "SG", "RU", "ID", "TW", "US", "VN", "TH", "ME", "PK", "CIS"]
 
 # --- Helper Functions
@@ -42,9 +40,16 @@ def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     return ciphertext
 
 def decode_protobuf(encoded_data: bytes, message_type: message.Message) -> message.Message:
-    message_instance = message_type()
-    message_instance.ParseFromString(encoded_data)
-    return message_instance
+    try:
+        message_instance = message_type()
+        message_instance.ParseFromString(encoded_data)
+        return message_instance
+    except Exception as e:
+        # Fallback for OB51 changes
+        try:
+            return json.loads(encoded_data.decode('utf-8'))
+        except:
+            raise ValueError(f"Failed to parse: {e}")
 
 # --- Core Authentication
 async def getAccess_Token(uid: str, password: str):
@@ -63,7 +68,7 @@ async def getAccess_Token(uid: str, password: str):
         
 
 async def create_jwt(uid: int, password: str) -> Tuple[str, str, str]:
-    access_token, open_id = await getAccess_Token(uid, password)
+    access_token, open_id = await getAccess_Token(str(uid), password)
     
     if access_token == "0":
         raise ValueError("Failed to obtain access token.")
@@ -93,11 +98,17 @@ async def create_jwt(uid: int, password: str) -> Tuple[str, str, str]:
     async with httpx.AsyncClient() as client:
         response = await client.post(url, data=payload, headers=headers)
         response_content = response.content
-        message = json.loads(json_format.MessageToJson(decode_protobuf(response_content, freefire_pb2.LoginRes)))
+        message = decode_protobuf(response_content, freefire_pb2.LoginRes)  # Improved
         
-        token = message.get("token", "0")
-        region = message.get("lockRegion", "0")
-        serverUrl = message.get("serverUrl", "0")
+        if isinstance(message, dict):
+            token = message.get("token", "0")
+            region = message.get("lockRegion", "0")
+            serverUrl = message.get("serverUrl", "0")
+        else:
+            token_json = json.loads(json_format.MessageToJson(message))
+            token = token_json.get("token", "0")
+            region = token_json.get("lockRegion", "0")
+            serverUrl = token_json.get("serverUrl", "0")
         
         if token == "0":
             raise ValueError("Failed to obtain JWT.")
@@ -106,7 +117,7 @@ async def create_jwt(uid: int, password: str) -> Tuple[str, str, str]:
 
 # --- Main Program to Run
 async def main():
-    print("\n--- Free Fire JWT Generator ---")
+    print("\n--- Free Fire JWT Generator (OB51) ---")
     
     uid = input("Enter your UID: ")
     password = input("Enter your password: ")
@@ -117,8 +128,7 @@ async def main():
         
     try:
         print("\nGenerating JWT...")
-        token, lock_region, server_url = await create_jwt(uid, password)
-        # return token
+        token, lock_region, server_url = await create_jwt(int(uid), password)
         print("\n--- JWT Created Successfully ---")
         print(f"Token: {token}")
         print(f"Locked Region: {lock_region}")
