@@ -8,10 +8,9 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from ff_proto.send_like_pb2 import like as LikeProfileReq
 
-# --- Garena API Encryption Constants ---
+# --- Garena API Encryption Constants (OB51 compatible) ---
 MAIN_KEY = b'Yg&tc%DEuh6%Zc^8'
 MAIN_IV = b'6oyZDr22E3ychjM%'
-
 
 def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     """
@@ -44,6 +43,6 @@ if __name__ == "__main__":
     region = "IND"             # Hardcoded region
 
     payload = create_like_payload(uid_to_like, region)
-    print("--- /LikeProfile Payload ---")
+    print("--- /LikeProfile Payload (OB51) ---")
     print("Raw bytes:", payload)
     print("Hex string:", binascii.hexlify(payload).upper().decode())
