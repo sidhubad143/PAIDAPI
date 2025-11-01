@@ -7,7 +7,6 @@
 # GitHub: https://github.com/0xMe/FreeFire-Api
 # Modifications by kaifcodec (c) 2025
 
-
 from ff_proto import freefire_pb2, core_pb2, account_show_pb2
 import httpx
 import asyncio
@@ -21,8 +20,8 @@ import sys
 
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
-RELEASEVERSION = "OB48"
-USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
+RELEASEVERSION = "OB51"  # Updated to OB51
+USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007)"  # Updated to recent Android 14
 SUPPORTED_REGIONS = ["IND", "BR", "SG", "RU", "ID", "TW", "US", "VN", "TH", "ME", "PK", "CIS"]
 ACCOUNTS = {
     'IND': "uid=4104125669&password=E5655A0D14EF812A908726152BDD38021BEF528801AA42B16CFA4ED67141C4CA",
@@ -39,18 +38,15 @@ ACCOUNTS = {
     'BR': "uid=3158668455&password=44296D19343151B25DE68286BDC565904A0DA5A5CC5E96B7A7ADBE7C11E07933"
 }
 
-
 async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
     json_format.ParseDict(json.loads(json_data), proto_message)
     serialized_data = proto_message.SerializeToString()
     return serialized_data
 
-
 def pad(text: bytes) -> bytes:
     padding_length = AES.block_size - (len(text) % AES.block_size)
     padding = bytes([padding_length] * padding_length)
     return text + padding
-
 
 def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     aes = AES.new(key, AES.MODE_CBC, iv)
@@ -58,12 +54,17 @@ def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     ciphertext = aes.encrypt(padded_plaintext)
     return ciphertext
 
-
 def decode_protobuf(encoded_data: bytes, message_type: message.Message) -> message.Message:
-    message_instance = message_type()
-    message_instance.ParseFromString(encoded_data)
-    return message_instance
-
+    try:
+        message_instance = message_type()
+        message_instance.ParseFromString(encoded_data)
+        return message_instance
+    except Exception as e:
+        # Fallback: if protobuf parse fails (e.g., schema change), try as JSON
+        try:
+            return json.loads(encoded_data.decode('utf-8'))
+        except:
+            raise ValueError(f"Failed to parse response as protobuf or JSON: {e}")
 
 async def getAccess_Token(account):
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
@@ -78,7 +79,6 @@ async def getAccess_Token(account):
         response = await client.post(url, data=payload, headers=headers)
         data = response.json()
         return data.get("access_token", "0"), data.get("open_id", "0")
-
 
 async def create_jwt(region: str) -> Tuple[str, str, str]:
     account = ACCOUNTS.get(region)
@@ -105,12 +105,17 @@ async def create_jwt(region: str) -> Tuple[str, str, str]:
     async with httpx.AsyncClient() as client:
         response = await client.post(url, data=payload, headers=headers)
         response_content = response.content
-        message = json.loads(json_format.MessageToJson(decode_protobuf(response_content, freefire_pb2.LoginRes)))
-        token = message.get("token", "0")
-        region = message.get("lockRegion", "0")
-        serverUrl = message.get("serverUrl", "0")
-        return f"Bearer {token}", region, serverUrl
-
+        message = decode_protobuf(response_content, freefire_pb2.LoginRes)  # Improved decode
+        if isinstance(message, dict):  # Fallback JSON
+            token = message.get("token", "0")
+            region_resp = message.get("lockRegion", "0")
+            serverUrl = message.get("serverUrl", "0")
+        else:
+            token_json = json.loads(json_format.MessageToJson(message))
+            token = token_json.get("token", "0")
+            region_resp = token_json.get("lockRegion", "0")
+            serverUrl = token_json.get("serverUrl", "0")
+        return f"Bearer {token}", region_resp, serverUrl
 
 async def GetAccountInformation(ID, UNKNOWN_ID, regionMain, endpoint):
     json_data = json.dumps({
@@ -127,7 +132,7 @@ async def GetAccountInformation(ID, UNKNOWN_ID, regionMain, endpoint):
         }
     token, region, serverUrl = await create_jwt(regionMain)
     headers = {
-        'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 13; A063 Build/TKQ1.221220.001)",
+        'User-Agent': USERAGENT,
         'Connection': "Keep-Alive",
         'Accept-Encoding': "gzip",
         'Content-Type': "application/octet-stream",
@@ -140,8 +145,10 @@ async def GetAccountInformation(ID, UNKNOWN_ID, regionMain, endpoint):
     async with httpx.AsyncClient() as client:
         response = await client.post(serverUrl + endpoint, data=payload, headers=headers)
         response_content = response.content
-        message = json.loads(json_format.MessageToJson(decode_protobuf(response_content, account_show_pb2.AccountPersonalShowInfo)))
-        return message
+        message = decode_protobuf(response_content, account_show_pb2.AccountPersonalShowInfo)  # Improved
+        if isinstance(message, dict):
+            return message
+        return json.loads(json_format.MessageToJson(message))
 
 # --- Interactive Main Program ---
 async def main():
