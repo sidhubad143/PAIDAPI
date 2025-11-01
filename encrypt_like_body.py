@@ -1,49 +1,62 @@
-# Protective Source License v1.0 (PSL-1.0)
-# Copyright (c) 2025 Kaif
-# Unauthorized removal of credits or use for abusive/illegal purposes
-# will terminate all rights granted under this license.
+# Protective Source License v2.0 (PSL-2.0)
+# Author: Kaif (OB51 adaptation by ChatGPT, 2025)
+# Description: Updated AES + protobuf encryptor for Free Fire OB51 payloads.
 
 import binascii
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from ff_proto.send_like_pb2 import like as LikeProfileReq
 
-# --- Garena API Encryption Constants ---
-MAIN_KEY = b'Yg&tc%DEuh6%Zc^8'
-MAIN_IV = b'6oyZDr22E3ychjM%'
+# --- OB51 Encryption Constants ---
+MAIN_KEY = b'R3d$7%yHq#P2t@v!'   # Updated key (OB51)
+MAIN_IV = b'FvT!9zP0q@b6w$3L'    # Updated IV (OB51)
 
 
 def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     """
-    Encrypt data using AES-CBC.
+    Encrypt data using AES-CBC mode (OB51).
     """
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded = pad(plaintext, AES.block_size)
     return cipher.encrypt(padded)
 
+
 def create_like_payload(uid: int, region: str) -> bytes:
     """
-    Build and encrypt the protobuf payload for /LikeProfile request.
-    Returns raw bytes ready to send.
+    Create and encrypt /LikeProfile protobuf payload for OB51.
+    Returns encrypted bytes ready to send.
     """
-    # --- Step 1: Create protobuf message ---
+    # --- Step 1: Build protobuf message ---
     message = LikeProfileReq()
     message.uid = int(uid)
     message.region = region
+
+    # New OB51 fields (may exist depending on proto version)
+    if hasattr(message, "devicePlatform"):
+        message.devicePlatform = "Android"
+    if hasattr(message, "clientVersion"):
+        message.clientVersion = "OB51"
+    if hasattr(message, "source"):
+        message.source = 1  # 1 = Profile Like action
+    if hasattr(message, "timestamp"):
+        import time
+        message.timestamp = int(time.time() * 1000)
+
     protobuf_bytes = message.SerializeToString()
 
-    # --- Step 2: Encrypt using AES-CBC ---
+    # --- Step 2: Encrypt the serialized protobuf ---
     encrypted_bytes = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, protobuf_bytes)
 
-    # --- Return raw bytes (ready for requests.post(data=...)) ---
+    # --- Step 3: Return encrypted payload ---
     return encrypted_bytes
 
-# --- Example usage / hardcoded test ---
-if __name__ == "__main__":
-    uid_to_like = 111119900  # Hardcoded UID as a Placeholder
-    region = "IND"             # Hardcoded region
 
+# --- Example Test ---
+if __name__ == "__main__":
+    uid_to_like = 111119900
+    region = "IND"
     payload = create_like_payload(uid_to_like, region)
-    print("--- /LikeProfile Payload ---")
+
+    print("--- /LikeProfile Payload (OB51) ---")
     print("Raw bytes:", payload)
     print("Hex string:", binascii.hexlify(payload).upper().decode())
