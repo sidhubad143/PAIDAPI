@@ -84,8 +84,21 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
 
             async with httpx.AsyncClient() as client:
                 url = f"{BASE_URL}/LikeProfile"  # Assuming same endpoint; if changed, update here
-                response = await client.post(url, data=payload, headers=headers, timeout=30)
+                response = await client.post(url, data=payload, headers=headers, timeout=45)  # Increased timeout
                 response.raise_for_status()
+                
+                # NEW: Print response body for debug (protobuf decode if needed)
+                try:
+                    resp_body = response.content
+                    if len(resp_body) > 0:
+                        print(f"[{guest_uid}] Response body (hex preview): {binascii.hexlify(resp_body[:50]).decode()}...")  # First 50 bytes
+                        # If protobuf response, try decode (add ff_proto.send_like_pb2 if available)
+                        # from ff_proto.send_like_pb2 import like as LikeRes  # Assume response proto
+                        # like_res = LikeRes()
+                        # like_res.ParseFromString(resp_body)
+                        # print(f"Decoded: {like_res}")
+                except Exception as decode_e:
+                    print(f"[{guest_uid}] Decode error: {decode_e}")
 
             print(f"[{guest_uid}] Like sent to {target_uid}! Status: {response.status_code}")
             mark_used(target_uid, guest_uid, now_ms)
@@ -113,9 +126,9 @@ async def main():
             print(f"Error: {info['message']}")
             return
         else:
-            print(json.dumps(info, indent=4))
-            # Extract initial like count (fixed missing default)
+            print("--- FULL BASIC INFO BEFORE ---")  # NEW: Full print for debug
             basic_info = info.get("basicInfo", {})
+            print(json.dumps(basic_info, indent=4))
             current_likes = basic_info.get("liked", 0)
             print(f"\nCurrent like count = {current_likes}")
     except Exception as e:
@@ -159,15 +172,23 @@ async def main():
     success = sum(1 for r in results if r)
     print(f"\nCompleted. Success: {success}/{likes_planned}. Total used guests for {uid_to_like}: {usage_by_target[uid_to_like]['total_likes']}")
 
-    # Fetch again after likes sent (fixed typo: use info_after)
+    # NEW: Delay before re-fetch (60s, increase to 300 for 5min test)
+    print("\nWaiting 60 seconds before re-fetch (likes may take time to register)...")
+    await asyncio.sleep(60)
+
+    # Fetch again after likes sent
     print("\nRe-fetching account info to verify new like count...")
     try:
         info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info_after = info_after.get("basicInfo", {})  # Fixed
-        new_likes = basic_info_after.get("liked", 0)  # Fixed
+        print("--- FULL BASIC INFO AFTER ---")  # NEW: Full print
+        basic_info_after = info_after.get("basicInfo", {})
+        print(json.dumps(basic_info_after, indent=4))
+        new_likes = basic_info_after.get("liked", 0)
         print(f"Like count now = {new_likes}")
         diff = new_likes - current_likes
         print(f"Likes increased by +{diff}")
+        if diff == 0:
+            print("⚠️ ALERT: No increase detected. Check response bodies above for errors. Try waiting longer or fresh guests.")
     except Exception as e:
         print(f"Could not fetch updated like count: {e}")
 
