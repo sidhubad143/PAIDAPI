@@ -77,7 +77,7 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
                 "Authorization": f"Bearer {jwt}",
                 "X-Unity-Version": "2018.4.11f1",
                 "X-GA": "v1 1",
-                "ReleaseVersion": "OB51",  # Updated for OB51
+                "ReleaseVersion": "OB51",
             }
 
             async with httpx.AsyncClient() as client:
@@ -115,11 +115,10 @@ async def main():
             print(json.dumps(info, indent=4))
             # Extract initial like count
             basic_info = info.get("basicInfo", {})
-            current_likes = basic_info.get("liked", 0)
+            current_likes = basic_info.get("liked", )
             print(f"\nCurrent like count = {current_likes}")
     except Exception as e:
         print(f"An error occurred while getting account information: {e}")
-        # Note: If the error persists, update the protobuf definitions in ff_proto/ for OB51 changes, especially LoginRes in get_jwt.py or count_likes.py
         return
 
     guest_count = count()
@@ -163,8 +162,8 @@ async def main():
     print("\nRe-fetching account info to verify new like count...")
     try:
         info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info_after = info_after.get("basicInfo", {})
-        new_likes = basic_info_after.get("liked", 0)
+        basic_info = info.get("basicInfo", {})
+        new_likes = basic_info.get("liked", 0)
         print(f"Like count now = {new_likes}")
         diff = new_likes - current_likes
         print(f"Likes increased by +{diff}")
