@@ -59,6 +59,10 @@ async def getAccess_Token(uid: str, password: str):
     }
     async with httpx.AsyncClient() as client:
         response = await client.post(url, data=payload, headers=headers)
+        print(f"OAuth Status Code: {response.status_code}")
+        print(f"OAuth Response: {response.text}")  # Debug: Print full response
+        if response.status_code != 200:
+            raise ValueError(f"OAuth request failed with status {response.status_code}: {response.text}")
         data = response.json()
         return data.get("access_token", "0"), data.get("open_id", "0")
 
@@ -92,6 +96,8 @@ async def create_jwt(uid: int, password: str) -> Tuple[str, str, str]:
       
     async with httpx.AsyncClient() as client:  
         response = await client.post(url, data=payload, headers=headers)  
+        print(f"Login Status Code: {response.status_code}")  # Debug: Add for second endpoint too
+        print(f"Login Response: {response.content}")  # Raw content since it's protobuf
         response_content = response.content  
         message = json.loads(json_format.MessageToJson(decode_protobuf(response_content, freefire_pb2.LoginRes())))  
           
