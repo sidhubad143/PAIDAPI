@@ -1,62 +1,51 @@
-# Protective Source License v2.0 (PSL-2.0)
-# Author: Kaif (OB51 adaptation by ChatGPT, 2025)
-# Description: Updated AES + protobuf encryptor for Free Fire OB51 payloads.
-
+# encrypt_like_body.py
 import binascii
+import time
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from ff_proto.send_like_pb2 import like as LikeProfileReq
 
-# --- OB51 Encryption Constants ---
-MAIN_KEY = b'R3d$7%yHq#P2t@v!'   # Updated key (OB51)
-MAIN_IV = b'FvT!9zP0q@b6w$3L'    # Updated IV (OB51)
-
+# OB51 AES constants
+MAIN_KEY = b'R3d$7%yHq#P2t@v!'   # 16 bytes
+MAIN_IV = b'FvT!9zP0q@b6w$3L'    # 16 bytes
 
 def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
-    """
-    Encrypt data using AES-CBC mode (OB51).
-    """
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded = pad(plaintext, AES.block_size)
     return cipher.encrypt(padded)
 
-
 def create_like_payload(uid: int, region: str) -> bytes:
     """
-    Create and encrypt /LikeProfile protobuf payload for OB51.
-    Returns encrypted bytes ready to send.
+    Build and encrypt the protobuf payload for /LikeProfile (OB51).
+    Returns raw bytes ready to send.
     """
-    # --- Step 1: Build protobuf message ---
     message = LikeProfileReq()
+    # Basic fields (existing)
     message.uid = int(uid)
     message.region = region
 
-    # New OB51 fields (may exist depending on proto version)
+    # OB51 additions (if present in your proto; using hasattr to be safe)
     if hasattr(message, "devicePlatform"):
         message.devicePlatform = "Android"
     if hasattr(message, "clientVersion"):
         message.clientVersion = "OB51"
     if hasattr(message, "source"):
-        message.source = 1  # 1 = Profile Like action
+        message.source = 1
     if hasattr(message, "timestamp"):
-        import time
         message.timestamp = int(time.time() * 1000)
+    if hasattr(message, "extra"):
+        # If proto contains an 'extra' map or bytes, leave empty or set minimal metadata
+        try:
+            # some protos have a bytes field; keep it blank
+            message.extra = b""
+        except Exception:
+            pass
 
     protobuf_bytes = message.SerializeToString()
-
-    # --- Step 2: Encrypt the serialized protobuf ---
     encrypted_bytes = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, protobuf_bytes)
-
-    # --- Step 3: Return encrypted payload ---
     return encrypted_bytes
 
-
-# --- Example Test ---
+# quick local test
 if __name__ == "__main__":
-    uid_to_like = 111119900
-    region = "IND"
-    payload = create_like_payload(uid_to_like, region)
-
-    print("--- /LikeProfile Payload (OB51) ---")
-    print("Raw bytes:", payload)
-    print("Hex string:", binascii.hexlify(payload).upper().decode())
+    payload = create_like_payload(111119900, "IND")
+    print("Hex:", binascii.hexlify(payload).decode())
