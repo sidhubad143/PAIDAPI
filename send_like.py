@@ -6,7 +6,8 @@ import os
 import time
 from get_jwt import create_jwt
 from encrypt_like_body import create_like_payload  # protobuf + AES encryptor
-from guests_manager.count_guest import count
+from count_likes import GetAccountInformation  # Now OB51 compatible
+from guests_manager.count_guest import count  # Assuming this is your guest counter
 
 # Paths
 guests_file = "guests_manager/guests_converted.json"
@@ -42,8 +43,9 @@ def save_usage():
     with open(usage_file, "w") as f:
         json.dump(usage_by_target, f, indent=2)
 
-# Determine Base URL based on Server Input
+# Determine Base URL based on Server Input (OB51 compatible)
 def get_base_url(server_name: str) -> str:
+    server_name = server_name.upper()
     if server_name == "IND":
         return "https://client.ind.freefiremobile.com"
     elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -63,8 +65,8 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
 
     async with semaphore:
         try:
-            jwt, region, server_url_from_jwt = await create_jwt(guest_uid, guest_pass)
-            payload = create_like_payload(target_uid, region)
+            jwt, region, server_url_from_jwt = await create_jwt(int(guest_uid), guest_pass)  # Use int(uid)
+            payload = create_like_payload(int(target_uid), region)
             if isinstance(payload, str):
                 payload = binascii.unhexlify(payload)
 
@@ -77,11 +79,11 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
                 "Authorization": f"Bearer {jwt}",
                 "X-Unity-Version": "2018.4.11f1",
                 "X-GA": "v1 1",
-                "ReleaseVersion": "OB50",
+                "ReleaseVersion": "OB51",  # Updated
             }
 
             async with httpx.AsyncClient() as client:
-                url = f"{BASE_URL}/LikeProfile"
+                url = f"{BASE_URL}/LikeProfile"  # Assuming same endpoint; if changed, update here
                 response = await client.post(url, data=payload, headers=headers, timeout=30)
                 response.raise_for_status()
 
@@ -103,7 +105,6 @@ async def like_with_guest(guest: dict, target_uid: str, BASE_URL: str, semaphore
 async def main():
     uid_to_like = input("Enter UID to like: ").strip()
     server_name_in = input("Enter server name (e.g., IND, BR, US, SAC, NA): ").strip().upper()
-    from count_likes import GetAccountInformation
 
     print("\nFetching target account info...")
     try:
@@ -113,9 +114,9 @@ async def main():
             return
         else:
             print(json.dumps(info, indent=4))
-            # Extract initial like count
+            # Extract initial like count (fixed missing default)
             basic_info = info.get("basicInfo", {})
-            current_likes = basic_info.get("liked", )
+            current_likes = basic_info.get("liked", 0)
             print(f"\nCurrent like count = {current_likes}")
     except Exception as e:
         print(f"An error occurred while getting account information: {e}")
@@ -158,12 +159,12 @@ async def main():
     success = sum(1 for r in results if r)
     print(f"\nCompleted. Success: {success}/{likes_planned}. Total used guests for {uid_to_like}: {usage_by_target[uid_to_like]['total_likes']}")
 
-    # Fetch again after likes sent
+    # Fetch again after likes sent (fixed typo: use info_after)
     print("\nRe-fetching account info to verify new like count...")
     try:
         info_after = await GetAccountInformation(uid_to_like, "0", server_name_in, endpoint)
-        basic_info = info.get("basicInfo", {})
-        new_likes = basic_info.get("liked", 0)
+        basic_info_after = info_after.get("basicInfo", {})  # Fixed
+        new_likes = basic_info_after.get("liked", 0)  # Fixed
         print(f"Like count now = {new_likes}")
         diff = new_likes - current_likes
         print(f"Likes increased by +{diff}")
